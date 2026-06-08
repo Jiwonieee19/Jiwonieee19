@@ -76,20 +76,18 @@ jobs:
           GH_GREENS = ["#161b22", "#0e4429", "#006d32", "#26a641", "#39d353"]
 
           def gh_color(count):
-            if count == 0:       return GH_GREENS[0]
+            if count == 0:    return GH_GREENS[0]
             ratio = count / peak
-            if ratio <= 0.25:    return GH_GREENS[1]
-            if ratio <= 0.50:    return GH_GREENS[2]
-            if ratio <= 0.75:    return GH_GREENS[3]
+            if ratio <= 0.25: return GH_GREENS[1]
+            if ratio <= 0.50: return GH_GREENS[2]
+            if ratio <= 0.75: return GH_GREENS[3]
             return GH_GREENS[4]
 
-          # SVG dimensions
-          W, H      = 900, 180
-          WAVE_H    = 120
-          TOP_PAD   = 10
-          BOT_PAD   = 40   # space for month labels
-          n         = len(counts)
-          step      = W / max(n - 1, 1)
+          W, H     = 900, 180
+          WAVE_H   = 120
+          TOP_PAD  = 10
+          n        = len(counts)
+          step     = W / max(n - 1, 1)
 
           def y_for(count):
             ratio = count / peak
@@ -129,7 +127,7 @@ jobs:
             for x, lbl in month_labels
           )
 
-          # Horizontal gradient stops based on contribution density
+          # Horizontal gradient stops
           NUM_STOPS = 20
           seg_size  = max(1, n // NUM_STOPS)
           grad_stops = ""
@@ -139,27 +137,36 @@ jobs:
             color = gh_color(counts[idx])
             grad_stops += f'<stop offset="{pct}%" stop-color="{color}" stop-opacity="0.9"/>\n            '
 
-          # The pulse oximeter effect:
-          # A vertical "scanner" line sweeps left to right continuously,
-          # revealing the wave as it passes — exactly like a heart monitor drawing itself.
-          # We achieve this with a clipPath whose rect animates its width from 0 to W,
-          # then instantly resets — giving the drawing/sweeping illusion.
-          # A bright dot rides the wave top at the scanner position.
-          # Duration: 6s for one full sweep across the year.
+          # Pulse oximeter effect:
+          # A ~3-month wide window (25% of W) of bright wave slides continuously
+          # across the full year path, looping forever with no pause at the edge.
+          # Leading edge = bright, trailing edge = fades to dim.
+          # Implemented via a moving linearGradient mask:
+          #   left of window  -> 0 opacity (dim base handles it)
+          #   window          -> 1 opacity
+          #   right of window -> 0 opacity
+          # The gradient x1/x2 animates in gradientUnits="userSpaceOnUse".
 
-          DURATION = "6s"
+          # Window width in px (~3 months out of 12)
+          WIN = round(W * 0.25)   # 225px
+          DURATION = "5s"
+
+          # We animate the gradient from starting fully off-left to ending fully off-right.
+          # Start: window right edge at x=0  -> x1 = -WIN, x2 = 0
+          # End:   window left  edge at x=W  -> x1 = W,    x2 = W + WIN
+          # Total travel = W + WIN
 
           svg = f"""<svg xmlns="http://www.w3.org/2000/svg"
                width="{W}" height="{H}"
                viewBox="0 0 {W} {H}">
 
             <defs>
-              <!-- Horizontal density gradient -->
+              <!-- Horizontal density gradient (full width) -->
               <linearGradient id="waveHoriz" x1="0" y1="0" x2="1" y2="0">
                 {grad_stops}
               </linearGradient>
 
-              <!-- Vertical fade: solid at top, transparent at bottom -->
+              <!-- Vertical fade -->
               <linearGradient id="waveFade" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%"   stop-color="white" stop-opacity="1"/>
                 <stop offset="100%" stop-color="white" stop-opacity="0"/>
@@ -169,7 +176,28 @@ jobs:
                 <rect width="{W}" height="{H}" fill="url(#waveFade)"/>
               </mask>
 
-              <!-- Glow for the wave stroke -->
+              <!-- Sliding window mask: bright band moves left→right continuously -->
+              <linearGradient id="slideGrad" x1="{-WIN}" y1="0" x2="0" y2="0"
+                              gradientUnits="userSpaceOnUse">
+                <stop offset="0%"   stop-color="black" stop-opacity="0"/>
+                <stop offset="40%"  stop-color="white" stop-opacity="1"/>
+                <stop offset="60%"  stop-color="white" stop-opacity="1"/>
+                <stop offset="100%" stop-color="black" stop-opacity="0"/>
+                <animateTransform
+                  attributeName="gradientTransform"
+                  type="translate"
+                  values="{-WIN} 0;{W + WIN} 0"
+                  dur="{DURATION}"
+                  repeatCount="indefinite"
+                  calcMode="linear"/>
+              </linearGradient>
+
+              <mask id="slideMask">
+                <rect x="{-WIN}" y="0" width="{W + WIN * 2}" height="{H}"
+                      fill="url(#slideGrad)"/>
+              </mask>
+
+              <!-- Glow filter -->
               <filter id="glow" x="-5%" y="-60%" width="110%" height="220%">
                 <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
                 <feMerge>
@@ -178,47 +206,17 @@ jobs:
                 </feMerge>
               </filter>
 
-              <!-- Bright glow for the scanning dot -->
-              <filter id="dotglow" x="-200%" y="-200%" width="500%" height="500%">
-                <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
-                <feMerge>
-                  <feMergeNode in="blur"/>
-                  <feMergeNode in="SourceGraphic"/>
-                </feMerge>
-              </filter>
-
-              <!-- Clip that sweeps left→right to reveal the wave -->
-              <clipPath id="sweepClip">
-                <rect id="sweepRect" x="0" y="0" width="0" height="{H}">
-                  <animate
-                    attributeName="width"
-                    values="0;{W};{W};0"
-                    keyTimes="0;0.85;0.99;1"
-                    dur="{DURATION}"
-                    repeatCount="indefinite"
-                    calcMode="linear"/>
-                </rect>
-              </clipPath>
-
-              <!-- Trailing fade behind the scanner (dark overlay that fades the old wave) -->
-              <linearGradient id="trailFade" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%"   stop-color="#000000" stop-opacity="0.55"/>
-                <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
-              </linearGradient>
-
             </defs>
 
-            <!-- Dim base wave (always visible, faded) -->
-            <g opacity="0.18" mask="url(#fadeMask)">
+            <!-- Dim ghost wave always visible underneath -->
+            <g opacity="0.15" mask="url(#fadeMask)">
               <path d="{fill_d}" fill="url(#waveHoriz)"/>
               <path d="{wave_d}" fill="none" stroke="#39d353" stroke-width="1.5" stroke-linejoin="round"/>
             </g>
 
-            <!-- Bright revealed wave (clipped to swept region) -->
-            <g clip-path="url(#sweepClip)">
-              <path d="{fill_d}" fill="url(#waveHoriz)" mask="url(#fadeMask)">
-                <animate attributeName="opacity" values="0.85;1;0.85" dur="2s" repeatCount="indefinite"/>
-              </path>
+            <!-- Bright sliding window wave -->
+            <g mask="url(#slideMask)">
+              <path d="{fill_d}" fill="url(#waveHoriz)" mask="url(#fadeMask)"/>
               <path d="{wave_d}"
                     fill="none"
                     stroke="#39d353"
@@ -227,28 +225,7 @@ jobs:
                     filter="url(#glow)"/>
             </g>
 
-            <!-- Scanning dot that rides along the wave top -->
-            <!-- We use a circle whose cx animates 0→W in sync with the sweep,
-                 and cy is fixed at a mid-wave height since SVG can't compute path position.
-                 The dot glows brightly to simulate the "drawing head". -->
-            <circle r="5" fill="#39d353" filter="url(#dotglow)" opacity="0.95">
-              <animate attributeName="cx"
-                       values="0;{W};{W};0"
-                       keyTimes="0;0.85;0.99;1"
-                       dur="{DURATION}"
-                       repeatCount="indefinite"
-                       calcMode="linear"/>
-              <!-- cy follows an approximate sine to loosely track the wave -->
-              <animate attributeName="cy"
-                       values="{';'.join(f'{y_for(counts[int(i*(n-1)/60)]):.1f}' for i in range(61))}"
-                       keyTimes="{';'.join(f'{i/60*0.85:.4f}' for i in range(61))}"
-                       dur="{DURATION}"
-                       repeatCount="indefinite"
-                       calcMode="linear"
-                       fill="freeze"/>
-            </circle>
-
-            <!-- Month labels (always visible) -->
+            <!-- Month labels -->
             {month_svg}
 
           </svg>"""
