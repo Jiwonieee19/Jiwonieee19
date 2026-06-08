@@ -1,0 +1,217 @@
+name: Contribution Wave
+
+permissions:
+  contents: write
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  wave:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: pip install requests
+
+      - name: Generate Contribution Wave SVG
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_USER: ${{ github.repository_owner }}
+        run: |
+          python - <<'EOF'
+          import os, requests
+          from datetime import datetime, timezone
+
+          user  = os.environ["GITHUB_USER"]
+          token = os.environ["GITHUB_TOKEN"]
+
+          # Fetch full year of contributions via GraphQL
+          query = """
+          query($login: String!) {
+            user(login: $login) {
+              contributionsCollection {
+                contributionCalendar {
+                  totalContributions
+                  weeks {
+                    contributionDays {
+                      date
+                      contributionCount
+                    }
+                  }
+                }
+              }
+            }
+          }
+          """
+          resp = requests.post(
+            "https://api.github.com/graphql",
+            json={"query": query, "variables": {"login": user}},
+            headers={"Authorization": f"Bearer {token}"}
+          ).json()
+
+          cal   = resp["data"]["user"]["contributionsCollection"]["contributionCalendar"]
+          total = cal["totalContributions"]
+          days  = [
+            day
+            for week in cal["weeks"]
+            for day in week["contributionDays"]
+          ]
+
+          counts = [d["contributionCount"] for d in days]
+          peak   = max(counts) if counts else 1
+
+          # SVG dimensions
+          W, H         = 900, 180
+          WAVE_H       = 110   # usable vertical space for the wave
+          TOP_PAD      = 20
+          BOTTOM_PAD   = 50
+          n            = len(counts)
+          step         = W / max(n - 1, 1)
+
+          def y_for(count):
+            # Higher count = higher peak (lower y value since SVG y goes down)
+            ratio = count / peak
+            return TOP_PAD + WAVE_H * (1 - ratio)
+
+          # Build smooth cubic bezier path points
+          pts = [(i * step, y_for(c)) for i, c in enumerate(counts)]
+
+          def smooth_path(pts):
+            if not pts:
+              return ""
+            d = f"M {pts[0][0]:.2f},{pts[0][1]:.2f}"
+            for i in range(1, len(pts)):
+              x0, y0 = pts[i - 1]
+              x1, y1 = pts[i]
+              cx = (x0 + x1) / 2
+              d += f" C {cx:.2f},{y0:.2f} {cx:.2f},{y1:.2f} {x1:.2f},{y1:.2f}"
+            return d
+
+          wave_d    = smooth_path(pts)
+          baseline_y = TOP_PAD + WAVE_H + 2
+          fill_d    = wave_d + f" L {W},{baseline_y} L 0,{baseline_y} Z"
+
+          # Month labels along the bottom
+          month_labels = []
+          seen_months  = set()
+          for i, day in enumerate(days):
+            m = day["date"][5:7]
+            if m not in seen_months:
+              seen_months.add(m)
+              label = datetime.fromisoformat(day["date"]).strftime("%b")
+              x     = i * step
+              month_labels.append((x, label))
+
+          month_svg = "".join(
+            f'<text x="{x:.1f}" y="{TOP_PAD + WAVE_H + 30}" '
+            f'text-anchor="middle" font-size="11" font-family="sans-serif" fill="#94a3b8">{lbl}</text>'
+            for x, lbl in month_labels
+          )
+
+          generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+          # Animated shimmer pulse on the wave fill
+          svg = f"""<svg xmlns="http://www.w3.org/2000/svg"
+               width="{W}" height="{H}"
+               viewBox="0 0 {W} {H}">
+
+            <defs>
+              <!-- Wave fill gradient: deep blue to teal -->
+              <linearGradient id="waveGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"   stop-color="#38bdf8" stop-opacity="0.85"/>
+                <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0.15"/>
+              </linearGradient>
+
+              <!-- Glow filter for the wave line -->
+              <filter id="glow" x="-10%" y="-40%" width="120%" height="180%">
+                <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
+                <feMerge>
+                  <feMergeNode in="blur"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+
+              <!-- Clip so wave stays inside card -->
+              <clipPath id="card-clip">
+                <rect width="{W}" height="{H}" rx="14"/>
+              </clipPath>
+            </defs>
+
+            <!-- Card background -->
+            <rect width="{W}" height="{H}" rx="14" fill="#0f172a"/>
+
+            <g clip-path="url(#card-clip)">
+
+              <!-- Subtle horizontal grid lines -->
+              {''.join(
+                f'<line x1="0" y1="{TOP_PAD + WAVE_H * r:.1f}" x2="{W}" y2="{TOP_PAD + WAVE_H * r:.1f}" '
+                f'stroke="#1e293b" stroke-width="1"/>'
+                for r in [0.25, 0.5, 0.75, 1.0]
+              )}
+
+              <!-- Filled wave area -->
+              <path d="{fill_d}" fill="url(#waveGrad)">
+                <animate attributeName="opacity"
+                         values="0.7;1;0.7" dur="4s" repeatCount="indefinite"/>
+              </path>
+
+              <!-- Wave top line (glowing) -->
+              <path d="{wave_d}"
+                    fill="none"
+                    stroke="#7dd3fc"
+                    stroke-width="2.5"
+                    stroke-linejoin="round"
+                    filter="url(#glow)">
+                <animate attributeName="stroke-opacity"
+                         values="0.6;1;0.6" dur="4s" repeatCount="indefinite"/>
+              </path>
+
+              <!-- Month labels -->
+              {month_svg}
+
+              <!-- Username + total -->
+              <text x="18" y="38"
+                    font-size="14" font-family="sans-serif"
+                    font-weight="600" fill="#f1f5f9">@{user}</text>
+              <text x="18" y="56"
+                    font-size="11" font-family="sans-serif"
+                    fill="#64748b">{total:,} contributions this year</text>
+
+              <!-- Updated timestamp -->
+              <text x="{W - 12}" y="{H - 10}"
+                    text-anchor="end"
+                    font-size="9" font-family="sans-serif"
+                    fill="#334155">Updated {generated}</text>
+
+            </g>
+          </svg>"""
+
+          os.makedirs("dist", exist_ok=True)
+          with open("dist/contribution-wave.svg", "w") as f:
+            f.write(svg)
+
+          print(f"✅ Wave SVG generated — {total} contributions, {n} days plotted")
+          EOF
+
+      - name: Deploy to Output Branch
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          publish_branch: output
+          commit_message: "Update contribution wave [skip ci]"
