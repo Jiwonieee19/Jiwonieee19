@@ -40,7 +40,6 @@ jobs:
           user  = os.environ["GITHUB_USER"]
           token = os.environ["GITHUB_TOKEN"]
 
-          # Fetch full year of contributions via GraphQL
           query = """
           query($login: String!) {
             user(login: $login) {
@@ -65,7 +64,6 @@ jobs:
           ).json()
 
           cal   = resp["data"]["user"]["contributionsCollection"]["contributionCalendar"]
-          total = cal["totalContributions"]
           days  = [
             day
             for week in cal["weeks"]
@@ -75,20 +73,30 @@ jobs:
           counts = [d["contributionCount"] for d in days]
           peak   = max(counts) if counts else 1
 
+          # GitHub green palette: 0 commits -> lightest, peak -> darkest
+          # matches GitHub's contribution graph colors
+          GH_GREENS = ["#161b22", "#0e4429", "#006d32", "#26a641", "#39d353"]
+
+          def gh_color(count):
+            if count == 0:
+              return GH_GREENS[0]
+            ratio = count / peak
+            if ratio <= 0.25:  return GH_GREENS[1]
+            if ratio <= 0.50:  return GH_GREENS[2]
+            if ratio <= 0.75:  return GH_GREENS[3]
+            return GH_GREENS[4]
+
           # SVG dimensions
-          W, H         = 900, 180
-          WAVE_H       = 110   # usable vertical space for the wave
-          TOP_PAD      = 20
-          BOTTOM_PAD   = 50
-          n            = len(counts)
-          step         = W / max(n - 1, 1)
+          W, H     = 900, 160
+          WAVE_H   = 120
+          TOP_PAD  = 10
+          n        = len(counts)
+          step     = W / max(n - 1, 1)
 
           def y_for(count):
-            # Higher count = higher peak (lower y value since SVG y goes down)
             ratio = count / peak
             return TOP_PAD + WAVE_H * (1 - ratio)
 
-          # Build smooth cubic bezier path points
           pts = [(i * step, y_for(c)) for i, c in enumerate(counts)]
 
           def smooth_path(pts):
@@ -102,101 +110,78 @@ jobs:
               d += f" C {cx:.2f},{y0:.2f} {cx:.2f},{y1:.2f} {x1:.2f},{y1:.2f}"
             return d
 
-          wave_d    = smooth_path(pts)
-          baseline_y = TOP_PAD + WAVE_H + 2
-          fill_d    = wave_d + f" L {W},{baseline_y} L 0,{baseline_y} Z"
+          wave_d     = smooth_path(pts)
+          baseline_y = TOP_PAD + WAVE_H
+          fill_d     = wave_d + f" L {W},{baseline_y} L 0,{baseline_y} Z"
 
-          # Month labels along the bottom
-          month_labels = []
-          seen_months  = set()
-          for i, day in enumerate(days):
-            m = day["date"][5:7]
-            if m not in seen_months:
-              seen_months.add(m)
-              label = datetime.fromisoformat(day["date"]).strftime("%b")
-              x     = i * step
-              month_labels.append((x, label))
+          # Build gradient stops based on actual contribution density across the year
+          # Divide the year into segments and pick the GitHub green for each segment
+          NUM_STOPS = 20
+          seg_size  = max(1, n // NUM_STOPS)
+          grad_stops = ""
+          for s in range(NUM_STOPS + 1):
+            idx   = min(s * seg_size, n - 1)
+            pct   = round(s * 100 / NUM_STOPS)
+            color = gh_color(counts[idx])
+            grad_stops += f'<stop offset="{pct}%" stop-color="{color}" stop-opacity="0.9"/>\n            '
 
-          month_svg = "".join(
-            f'<text x="{x:.1f}" y="{TOP_PAD + WAVE_H + 30}" '
-            f'text-anchor="middle" font-size="11" font-family="sans-serif" fill="#94a3b8">{lbl}</text>'
-            for x, lbl in month_labels
-          )
-
-          generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-          # Animated shimmer pulse on the wave fill
+          # Vertical gradient: top = darkest green of that segment, bottom = transparent
+          # We use a second vertical gradient overlaid for the fade-to-transparent effect
           svg = f"""<svg xmlns="http://www.w3.org/2000/svg"
                width="{W}" height="{H}"
                viewBox="0 0 {W} {H}">
 
             <defs>
-              <!-- Wave fill gradient: deep blue to teal -->
-              <linearGradient id="waveGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%"   stop-color="#38bdf8" stop-opacity="0.85"/>
-                <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0.15"/>
+              <!-- Horizontal gradient based on contribution density -->
+              <linearGradient id="waveHoriz" x1="0" y1="0" x2="1" y2="0">
+                {grad_stops}
               </linearGradient>
 
-              <!-- Glow filter for the wave line -->
-              <filter id="glow" x="-10%" y="-40%" width="120%" height="180%">
-                <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
+              <!-- Vertical fade: opaque at top, transparent at bottom -->
+              <linearGradient id="waveFade" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"   stop-color="white" stop-opacity="1"/>
+                <stop offset="100%" stop-color="white" stop-opacity="0"/>
+              </linearGradient>
+
+              <!-- Multiply the two gradients together via a mask -->
+              <mask id="fadeMask">
+                <rect width="{W}" height="{H}" fill="url(#waveFade)"/>
+              </mask>
+
+              <!-- Glow filter for the wave stroke -->
+              <filter id="glow" x="-5%" y="-50%" width="110%" height="200%">
+                <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur"/>
                 <feMerge>
                   <feMergeNode in="blur"/>
                   <feMergeNode in="SourceGraphic"/>
                 </feMerge>
               </filter>
 
-              <!-- Clip so wave stays inside card -->
-              <clipPath id="card-clip">
-                <rect width="{W}" height="{H}" rx="14"/>
+              <clipPath id="wave-clip">
+                <rect width="{W}" height="{H}"/>
               </clipPath>
             </defs>
 
-            <!-- Card background -->
-            <rect width="{W}" height="{H}" rx="14" fill="#0f172a"/>
+            <!-- Transparent background -->
 
-            <g clip-path="url(#card-clip)">
+            <g clip-path="url(#wave-clip)">
 
-              <!-- Subtle horizontal grid lines -->
-              {''.join(
-                f'<line x1="0" y1="{TOP_PAD + WAVE_H * r:.1f}" x2="{W}" y2="{TOP_PAD + WAVE_H * r:.1f}" '
-                f'stroke="#1e293b" stroke-width="1"/>'
-                for r in [0.25, 0.5, 0.75, 1.0]
-              )}
-
-              <!-- Filled wave area -->
-              <path d="{fill_d}" fill="url(#waveGrad)">
+              <!-- Filled wave area with horizontal density gradient + vertical fade -->
+              <path d="{fill_d}" fill="url(#waveHoriz)" mask="url(#fadeMask)">
                 <animate attributeName="opacity"
-                         values="0.7;1;0.7" dur="4s" repeatCount="indefinite"/>
+                         values="0.75;1;0.75" dur="4s" repeatCount="indefinite"/>
               </path>
 
-              <!-- Wave top line (glowing) -->
+              <!-- Wave top line with glow -->
               <path d="{wave_d}"
                     fill="none"
-                    stroke="#7dd3fc"
-                    stroke-width="2.5"
+                    stroke="#39d353"
+                    stroke-width="2"
                     stroke-linejoin="round"
                     filter="url(#glow)">
                 <animate attributeName="stroke-opacity"
-                         values="0.6;1;0.6" dur="4s" repeatCount="indefinite"/>
+                         values="0.5;1;0.5" dur="4s" repeatCount="indefinite"/>
               </path>
-
-              <!-- Month labels -->
-              {month_svg}
-
-              <!-- Username + total -->
-              <text x="18" y="38"
-                    font-size="14" font-family="sans-serif"
-                    font-weight="600" fill="#f1f5f9">@{user}</text>
-              <text x="18" y="56"
-                    font-size="11" font-family="sans-serif"
-                    fill="#64748b">{total:,} contributions this year</text>
-
-              <!-- Updated timestamp -->
-              <text x="{W - 12}" y="{H - 10}"
-                    text-anchor="end"
-                    font-size="9" font-family="sans-serif"
-                    fill="#334155">Updated {generated}</text>
 
             </g>
           </svg>"""
@@ -205,7 +190,7 @@ jobs:
           with open("dist/contribution-wave.svg", "w") as f:
             f.write(svg)
 
-          print(f"✅ Wave SVG generated — {total} contributions, {n} days plotted")
+          print(f"Wave SVG generated — {n} days plotted, peak={peak}")
           EOF
 
       - name: Deploy to Output Branch
