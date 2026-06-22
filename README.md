@@ -1,3 +1,16 @@
+# Hey, I'm Ryy
+
+**`A frontend developer`**
+
+
+
+
+
+
+
+
+I'm looking to collaborate on **web projects**, currently learning and exploring both Machine Learning and Game Development.
+
 ![snake gif](https://github.com/Jiwonieee19/Jiwonieee19/blob/output/github-snake-dark.svg)
 
 <!-- <img src="https://raw.githubusercontent.com/Jiwonieee19/Jiwonieee19/output/contribution-wave.svg" alt="wave"/> -->
