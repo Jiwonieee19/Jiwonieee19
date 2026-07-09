@@ -9,7 +9,7 @@
 
 
 
-I'm looking to collaborate on **web projects**, currently learning and exploring both Machine Learning and Game Development.
+I'm looking to collaborate on **web-based game projects**, currently learning and exploring both Machine Learning and Game Development.
 
 ![snake gif](https://github.com/Jiwonieee19/Jiwonieee19/blob/output/github-snake-dark.svg)
 
